@@ -90,7 +90,31 @@ class LululemonMonitor:
             page_text = response.text
             import re
             
-            product_name = "Unknown Product"
+            # Try to get product name from config first (urls.json has color names)
+            product_name = "Align Legging"
+            try:
+                # Look up color name from config
+                for product in self.config.get('products', []):
+                    if product.get('url') == product_url:
+                        color_name = product.get('name', '')
+                        if color_name:
+                            product_name = f"Align Legging - {color_name}"
+                            break
+            except:
+                pass
+            
+            # Fallback: extract color from URL if available
+            if product_name == "Align Legging":
+                try:
+                    from urllib.parse import urlparse, parse_qs
+                    parsed = urlparse(product_url)
+                    params = parse_qs(parsed.query)
+                    color_id = params.get('color', [None])[0]
+                    if color_id:
+                        product_name = f"Align Legging - Color {color_id}"
+                except:
+                    pass
+            
             current_price = None
             is_in_stock = False
             stock_indicators = []
