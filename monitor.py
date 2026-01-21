@@ -645,14 +645,15 @@ Checked at: {product_info['checked_at']}
             for name, price, url in current_s2:
                 print(f"  - {name} @ ${price:.2f}  ({url})")
 
-        print("\n🆕 New S1 this run (triggered alerts):")
+        # These sections show which items actually triggered emails this run
+        print("\n🆕 S1 alerts this run (price < $50):")
         if not new_s1:
             print("  (none)")
         else:
             for name, price, url in new_s1:
                 print(f"  - {name} @ ${price:.2f}  ({url})")
 
-        print("\n🆕 New S2 this run (triggered alerts):")
+        print("\n🆕 S2 alerts this run ($50–$60):")
         if not new_s2:
             print("  (none)")
         else:
