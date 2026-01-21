@@ -116,7 +116,8 @@ class LululemonMonitor:
                     pass
             
             current_price = None
-            is_in_stock = False
+            # Default to IN STOCK unless we find "Sold out online."
+            is_in_stock = True
             stock_indicators = []
             
             # Strategy 1: Look for embedded JSON data with variant information
@@ -224,21 +225,48 @@ class LululemonMonitor:
                         if product_name and len(product_name) > 3:
                             stock_indicators.append(f"Title from regex: {product_name[:50]}")
             
-            # Look for price elements (multiple strategies)
-            price_element = (soup.find('span', {'data-testid': 'price'}) or
-                           soup.find('span', class_=lambda x: x and 'price' in x.lower()) or
-                           soup.find('div', {'data-testid': 'price'}) or
-                           soup.find('p', class_=lambda x: x and 'price' in x.lower()))
+            # Look for "$XXX USD" pattern FIRST (Lululemon's standard format)
+            # Try different spacing patterns: "$98 USD", "$98USD", "$98  USD"
+            usd_price_match = re.search(r'\$(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)\s*USD', page_text, re.IGNORECASE)
+            if usd_price_match:
+                try:
+                    current_price = float(usd_price_match.group(1).replace(',', ''))
+                    stock_indicators.append(f"Price from '$XXX USD' pattern: ${current_price}")
+                except:
+                    pass
             
-            if price_element and current_price is None:
-                price_text = price_element.get_text(strip=True)
-                price_match = re.search(r'\$?(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)', price_text.replace(',', ''))
-                if price_match:
+            # Also try without USD (just $XXX as standalone)
+            if current_price is None:
+                # Look for prices followed by USD (with flexible spacing)
+                usd_pattern2 = re.search(r'\$\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)\s*(?:USD|USD)', page_text, re.IGNORECASE)
+                if usd_pattern2:
                     try:
-                        current_price = float(price_match.group(1))
-                        stock_indicators.append(f"Price from HTML: ${current_price}")
+                        price_val = float(usd_pattern2.group(1).replace(',', ''))
+                        if price_val >= 20 and price_val <= 300:
+                            current_price = price_val
+                            stock_indicators.append(f"Price from '$XXX USD' pattern (flexible): ${current_price}")
                     except:
                         pass
+            
+            # Look for price elements (multiple strategies)
+            if current_price is None:
+                price_element = (soup.find('span', {'data-testid': 'price'}) or
+                               soup.find('span', class_=lambda x: x and 'price' in x.lower()) or
+                               soup.find('div', {'data-testid': 'price'}) or
+                               soup.find('p', class_=lambda x: x and 'price' in x.lower()))
+                
+                if price_element:
+                    price_text = price_element.get_text(strip=True)
+                    # Look for $XXX pattern in price text
+                    price_match = re.search(r'\$(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)', price_text.replace(',', ''))
+                    if price_match:
+                        try:
+                            price_val = float(price_match.group(1))
+                            if price_val >= 20 and price_val <= 300:  # Realistic range
+                                current_price = price_val
+                                stock_indicators.append(f"Price from HTML: ${current_price}")
+                        except:
+                            pass
             
             # Look for meta tags with price
             if current_price is None:
@@ -247,107 +275,41 @@ class LululemonMonitor:
                             soup.find('meta', {'property': 'og:price:amount'}))
                 if price_meta:
                     try:
-                        current_price = float(price_meta.get('content', 0))
-                        if current_price > 0:
+                        price_val = float(price_meta.get('content', 0))
+                        if price_val >= 20 and price_val <= 300:
+                            current_price = price_val
                             stock_indicators.append(f"Price from meta: ${current_price}")
                     except:
                         pass
             
-            # Fallback: search entire page for price pattern (filter out obviously wrong prices)
+            # Fallback: search for any $XX or $XXX pattern (realistic range)
             if current_price is None:
                 price_pattern = r'\$\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)'
                 matches = re.findall(price_pattern, page_text)
                 if matches:
                     try:
-                        # Filter for realistic prices (Lululemon products are usually $20-$200+)
-                        # Ignore prices under $10 (likely incidental numbers)
+                        # Filter for realistic prices
                         prices = [float(m.replace(',', '')) for m in matches]
-                        prices = [p for p in prices if p >= 20 and p <= 300]  # Filter realistic range
+                        prices = [p for p in prices if p >= 20 and p <= 300]
                         if prices:
-                            # For Lululemon, the main price is usually the most common or around $80-$120
-                            # But we want to catch sale prices too, so look for reasonable range
-                            current_price = min(prices) if prices else None
+                            # Take the most common price or median
+                            current_price = prices[0] if prices else None
                             if current_price:
                                 stock_indicators.append(f"Price from page scan: ${current_price}")
                     except:
                         pass
             
-            # Strategy 4: Check for explicit "Sold out online" text (Lululemon-specific)
-            sold_out_text = (soup.find(string=re.compile(r'sold out online', re.I)) or
-                            soup.find(string=re.compile(r'sold out online\.', re.I)))
+            # Stock detection: ONLY check for "Sold out online." text (exact requirement)
+            # Default is IN STOCK unless this text appears
+            sold_out_pattern = re.search(r'sold out online\.', page_text, re.IGNORECASE)
             
-            # Strategy 5: Check Add to Bag button status (primary indicator)
-            # Look for button with specific text patterns (Lululemon uses these)
-            add_to_bag_button = None
-            all_buttons = soup.find_all('button')
-            
-            for button in all_buttons:
-                button_text = button.get_text(strip=True).lower()
-                # Check for Add to Bag button
-                if 'add to bag' in button_text or 'add to cart' in button_text:
-                    add_to_bag_button = button
-                    break
-                # Also check for "Sold out - notify me" pattern (indicates out of stock)
-                if 'sold out' in button_text and 'notify' in button_text:
-                    add_to_bag_button = button
-                    break
-            
-            # Fallback to data-testid or class-based search
-            if not add_to_bag_button:
-                add_to_bag_button = (soup.find('button', {'data-testid': 'add-to-bag'}) or
-                                    soup.find('button', {'data-testid': 'addToBag'}) or
-                                    soup.find('button', class_=lambda x: x and 'add' in x.lower() and ('bag' in x.lower() or 'cart' in x.lower())))
-            
-            # Also check for other out of stock indicators
-            out_of_stock_indicators = (
-                soup.find(string=re.compile(r'out of stock', re.I)) or
-                soup.find(string=re.compile(r'sold out', re.I)) or
-                soup.find(string=re.compile(r'notify me', re.I)) or
-                soup.find(class_=lambda x: x and ('out-of-stock' in str(x).lower() or 'sold-out' in str(x).lower()))
-            )
-            
-            # Check for "Sold out online" explicitly first (Lululemon pattern)
-            if sold_out_text:
+            if sold_out_pattern:
                 is_in_stock = False
-                stock_indicators.append("'Sold out online' text found")
-            elif out_of_stock_indicators:
-                is_in_stock = False
-                stock_indicators.append("Out of stock indicator found")
-            elif add_to_bag_button:
-                # Check if button is disabled
-                button_disabled = (add_to_bag_button.get('disabled') is not None or
-                                 'disabled' in add_to_bag_button.get('class', []) or
-                                 'aria-disabled' in add_to_bag_button.attrs)
-                
-                button_text = add_to_bag_button.get_text(strip=True).lower()
-                
-                if button_disabled:
-                    is_in_stock = False
-                    stock_indicators.append("Add to Bag button is disabled")
-                elif 'sold out' in button_text and 'notify me' in button_text:
-                    # "Sold out - notify me" pattern (Lululemon-specific)
-                    is_in_stock = False
-                    stock_indicators.append(f"Button text: '{button_text}' indicates out of stock")
-                elif 'out of stock' in button_text or 'notify me' in button_text or 'sold out' in button_text:
-                    is_in_stock = False
-                    stock_indicators.append(f"Button text indicates out of stock: {button_text}")
-                elif 'add to bag' in button_text or 'add to cart' in button_text:
-                    is_in_stock = True
-                    stock_indicators.append(f"Button text: '{button_text}' - In Stock")
-                else:
-                    # Button exists and is not disabled, assume in stock
-                    is_in_stock = True
-                    stock_indicators.append(f"Add to Bag button found (enabled) - text: '{button_text}'")
+                stock_indicators.append("'Sold out online.' text found - OUT OF STOCK")
             else:
-                # No button found - check for size selector being disabled
-                size_selectors = soup.find_all(class_=re.compile(r'size|variant', re.I))
-                for selector in size_selectors:
-                    if 'disabled' in selector.get('class', []) or selector.get('disabled') is not None:
-                        stock_indicators.append("Size selector appears disabled")
-                
-                # If we couldn't determine stock from JSON, default to False
-                if not stock_indicators:
-                    stock_indicators.append("Could not determine stock status")
+                # No "Sold out online." found, so it's IN STOCK
+                is_in_stock = True
+                stock_indicators.append("No 'Sold out online.' text - IN STOCK")
             
             # Debug output (can be enabled via config)
             if self.config.get('debug', False):
