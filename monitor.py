@@ -16,6 +16,8 @@ from datetime import datetime
 import schedule
 import os
 from pathlib import Path
+import gzip
+from typing import Optional, Tuple
 
 class LululemonMonitor:
     def __init__(self, config_file='config.json'):
@@ -29,7 +31,10 @@ class LululemonMonitor:
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
+            # IMPORTANT: Don't force brotli ("br") here.
+            # We've observed cases where the saved "HTML" was actually binary/garbled,
+            # which prevents price/stock text like "$108 USD" / "Sold out online." from being parsed.
+            # Let `requests` manage Accept-Encoding + decompression automatically.
             'DNT': '1',
             'Connection': 'keep-alive',
             'Upgrade-Insecure-Requests': '1',
@@ -39,6 +44,37 @@ class LululemonMonitor:
             'Sec-Fetch-User': '?1',
             'Referer': 'https://www.google.com/'
         })
+
+    def _decode_response_body(self, response: requests.Response) -> Tuple[str, str]:
+        """
+        Best-effort decode of a response body to text.
+
+        Returns: (text, debug_note)
+        """
+        raw = response.content or b""
+
+        # If body looks gzipped (even if server headers are weird), try to decompress.
+        try:
+            if len(raw) >= 2 and raw[0] == 0x1F and raw[1] == 0x8B:
+                raw = gzip.decompress(raw)
+                return raw.decode("utf-8", errors="replace"), "decoded:gzip->utf8"
+        except Exception:
+            # Fall through to other decode strategies
+            pass
+
+        # Prefer requests' decoding first
+        try:
+            txt = response.text
+            if txt and "<html" in txt.lower():
+                return txt, "decoded:requests.text"
+        except Exception:
+            pass
+
+        # Fallback: try utf-8 then latin-1
+        try:
+            return raw.decode("utf-8", errors="replace"), "decoded:utf8_replace"
+        except Exception:
+            return raw.decode("latin-1", errors="replace"), "decoded:latin1_replace"
     
     def load_config(self):
         """Load configuration from JSON file."""
@@ -85,17 +121,32 @@ class LululemonMonitor:
             
             response = self.session.get(product_url, timeout=15, headers=headers, allow_redirects=True)
             response.raise_for_status()
-            
-            soup = BeautifulSoup(response.text, 'html.parser')
-            page_text = response.text
+
+            page_text, decode_note = self._decode_response_body(response)
+            soup = BeautifulSoup(page_text, 'html.parser')
             import re
             
-            # Debug: Save page if needed (uncomment for debugging)
-            # import os
-            # debug_dir = '/tmp/lululemon_debug'
-            # os.makedirs(debug_dir, exist_ok=True)
-            # with open(f'{debug_dir}/page_{hash(product_url)%10000}.html', 'w', encoding='utf-8') as f:
-            #     f.write(page_text)
+            # Debug: Save page HTML for inspection (enable debug mode in config.json)
+            if self.config.get('debug', False):
+                import os
+                from urllib.parse import urlparse, parse_qs
+                debug_dir = '/tmp/lululemon_debug'
+                os.makedirs(debug_dir, exist_ok=True)
+                parsed = urlparse(product_url)
+                params = parse_qs(parsed.query)
+                color_id = params.get('color', ['unknown'])[0]
+                # Save raw bytes and decoded HTML so we can compare what the server actually sent.
+                raw_file = f'{debug_dir}/color_{color_id}.bin'
+                html_file = f'{debug_dir}/color_{color_id}.html'
+                try:
+                    with open(raw_file, 'wb') as f:
+                        f.write(response.content or b'')
+                except Exception:
+                    pass
+                with open(html_file, 'w', encoding='utf-8', errors='replace') as f:
+                    f.write(page_text)
+                print(f"  [DEBUG] Saved raw to {raw_file}")
+                print(f"  [DEBUG] Saved HTML to {html_file} ({decode_note})")
             
             # Try to get product name from config first (urls.json has color names)
             product_name = "Align Legging"
@@ -243,16 +294,18 @@ class LululemonMonitor:
                            soup.find('h1'))
             
             if title_element:
-                product_name = title_element.get_text(strip=True)
-                if product_name and product_name != "" and len(product_name) > 3:
-                    stock_indicators.append(f"Title found: {product_name[:50]}")
+                # Keep the config-based name ("Align Legging - <Color>") stable.
+                # Only record the on-page title as a debug indicator.
+                title_text = title_element.get_text(strip=True)
+                if title_text and title_text != "" and len(title_text) > 3:
+                    stock_indicators.append(f"Title found: {title_text[:80]}")
                 else:
                     # Try finding title in page text patterns
                     title_match = re.search(r'<h1[^>]*>(.*?)</h1>', page_text, re.IGNORECASE | re.DOTALL)
                     if title_match:
-                        product_name = re.sub(r'<[^>]+>', '', title_match.group(1)).strip()
-                        if product_name and len(product_name) > 3:
-                            stock_indicators.append(f"Title from regex: {product_name[:50]}")
+                        title_text = re.sub(r'<[^>]+>', '', title_match.group(1)).strip()
+                        if title_text and len(title_text) > 3:
+                            stock_indicators.append(f"Title from regex: {title_text[:80]}")
             
             # Search page text for "$XXX USD" (after script tags, fallback)
             # Only if not found in script tags
