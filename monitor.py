@@ -582,6 +582,11 @@ Checked at: {product_info['checked_at']}
         print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Checking products...")
         
         products = self.config.get('products', [])
+        # Track current tier membership and newly-triggered alerts for this run
+        current_s1 = []  # (name, price, url)
+        current_s2 = []  # (name, price, url)
+        new_s1 = []      # subset of current_s1 that triggered alerts
+        new_s2 = []      # subset of current_s2 that triggered alerts
         
         for product in products:
             url = product.get('url')
@@ -596,6 +601,15 @@ Checked at: {product_info['checked_at']}
                 print(f"  Price: ${product_info.get('price', 'N/A')}")
                 print(f"  In Stock: {product_info.get('in_stock', False)}")
                 
+                # Determine which tier (if any) this product is currently in
+                price_val = product_info.get('price')
+                in_stock = product_info.get('in_stock')
+                current_tier = self.get_price_tier(price_val) if in_stock else None
+                if current_tier == 'S1':
+                    current_s1.append((product_info.get('name'), price_val, product_info.get('url')))
+                elif current_tier == 'S2':
+                    current_s2.append((product_info.get('name'), price_val, product_info.get('url')))
+
                 # Determine which tier (if any) should trigger an alert
                 alert_tier = self.should_send_alert(product_info, product)
                 
@@ -603,24 +617,28 @@ Checked at: {product_info['checked_at']}
                     tier_name = "Best Deal (S1)" if alert_tier == 'S1' else "Great Deal (S2)"
                     print(f"  ✅ ALERT! Sending {tier_name} notification...")
                     self.send_email(product_info, alert_tier)
+
+                    # Track newly-triggered items for this run
+                    if alert_tier == 'S1':
+                        new_s1.append((product_info.get('name'), price_val, product_info.get('url')))
+                    elif alert_tier == 'S2':
+                        new_s2.append((product_info.get('name'), price_val, product_info.get('url')))
                 else:
                     # Still update state even if no alert (to track current tier status)
-                    if product_info.get('in_stock'):
-                        current_tier = self.get_price_tier(product_info.get('price'))
-                        if current_tier:
-                            product_id = product_info['url']
-                            if 'last_alerts' not in self.state:
-                                self.state['last_alerts'] = {}
-                            if product_id not in self.state['last_alerts']:
-                                self.state['last_alerts'][product_id] = {}
-                            
-                            # Update tier status without sending alert
-                            self.state['last_alerts'][product_id]['was_in_s1'] = (current_tier == 'S1')
-                            self.state['last_alerts'][product_id]['was_in_s2'] = (current_tier == 'S2')
-                            self.state['last_alerts'][product_id]['price'] = product_info.get('price')
-                            self.state['last_alerts'][product_id]['in_stock'] = product_info.get('in_stock')
-                            self.state['last_alerts'][product_id]['last_tier'] = current_tier
-                            self.save_state()
+                    if in_stock and current_tier:
+                        product_id = product_info['url']
+                        if 'last_alerts' not in self.state:
+                            self.state['last_alerts'] = {}
+                        if product_id not in self.state['last_alerts']:
+                            self.state['last_alerts'][product_id] = {}
+                        
+                        # Update tier status without sending alert
+                        self.state['last_alerts'][product_id]['was_in_s1'] = (current_tier == 'S1')
+                        self.state['last_alerts'][product_id]['was_in_s2'] = (current_tier == 'S2')
+                        self.state['last_alerts'][product_id]['price'] = price_val
+                        self.state['last_alerts'][product_id]['in_stock'] = in_stock
+                        self.state['last_alerts'][product_id]['last_tier'] = current_tier
+                        self.save_state()
                     
                     print(f"  ⏭️  No alert needed")
             else:
@@ -629,7 +647,36 @@ Checked at: {product_info['checked_at']}
             # Be respectful - don't hammer the server
             time.sleep(2)
         
-        print("Check complete.\n")
+        # After processing all products, print S1/S2 summary for this run
+        print("\n🔎 Current S1 (price < $50, in stock):")
+        if not current_s1:
+            print("  (none)")
+        else:
+            for name, price, url in current_s1:
+                print(f"  - {name} @ ${price:.2f}  ({url})")
+
+        print("\n🔎 Current S2 ($50–$60, in stock):")
+        if not current_s2:
+            print("  (none)")
+        else:
+            for name, price, url in current_s2:
+                print(f"  - {name} @ ${price:.2f}  ({url})")
+
+        print("\n🆕 New S1 this run (triggered alerts):")
+        if not new_s1:
+            print("  (none)")
+        else:
+            for name, price, url in new_s1:
+                print(f"  - {name} @ ${price:.2f}  ({url})")
+
+        print("\n🆕 New S2 this run (triggered alerts):")
+        if not new_s2:
+            print("  (none)")
+        else:
+            for name, price, url in new_s2:
+                print(f"  - {name} @ ${price:.2f}  ({url})")
+
+        print("\nCheck complete.\n")
     
     def run(self, interval_minutes=15):
         """Run the monitor continuously with scheduled checks."""
