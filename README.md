@@ -4,11 +4,11 @@ Automatically monitors Lululemon products for stock availability and price alert
 
 ## Features
 
-- Monitors 30+ product URLs simultaneously
+- Monitors 29 product URLs simultaneously
 - Checks stock availability and price every 30 minutes
 - Sends email notifications when products meet your criteria (in stock + price under threshold)
 - Tracks state to avoid duplicate alerts
-- Runs automatically in the cloud via GitHub Actions (free)
+- Runs automatically in the background on your Mac
 
 ## Two-Tier Alert System
 
@@ -22,87 +22,97 @@ Automatically monitors Lululemon products for stock availability and price alert
 
 ## Setup
 
-### 1. GitHub Actions Setup (Free, Automated)
+### 1. Install Dependencies
 
-1. **Set up GitHub Secrets** (Settings → Secrets → Actions):
-   - `EMAIL_FROM` → Your Gmail address
-   - `EMAIL_TO` → Recipient email address
-   - `EMAIL_PASSWORD` → Your Gmail App Password (generate from Google Account settings)
+```bash
+cd /Users/digantjain/Documents/GitHub/lululemon_alerts
+source venv/bin/activate
+pip install -r requirements.txt
+```
 
-2. **Push to GitHub**:
-   ```bash
-   git push origin main
-   ```
+### 2. Configure Email
 
-3. **That's it!** The workflow runs automatically every 30 minutes.
+Your email settings are already configured in `config.json`. The monitor uses Gmail with an App Password.
 
-### 2. Gmail App Password Setup
+### 3. Set Up LaunchAgent (Automatic Background Running)
 
-1. Go to your Google Account settings
-2. Enable 2-Factor Authentication
-3. Generate an App Password:
-   - Go to https://myaccount.google.com/apppasswords
-   - Select "Mail" and your device
-   - Copy the generated password
+Run the setup script:
 
-## How It Works
+```bash
+./setup_launchagent.sh
+```
 
-1. The monitor checks each product URL in `urls.json`
-2. For each URL (which includes specific color, size, inseam):
-   - Fetches the product page
-   - Extracts product name, current price, and stock status
-   - Uses multiple detection strategies for accuracy
-3. If a product is:
-   - **In stock** AND
-   - **Price is under your max_price threshold** AND
-   - **Meets tier alert conditions**
-   
-   Then it sends you an email notification!
+This creates a LaunchAgent that will:
+- Run the monitor automatically in the background
+- Start automatically when you log in
+- Restart automatically if it crashes
 
-4. The monitor runs automatically every 30 minutes via GitHub Actions
+### 4. Start the Monitor
+
+```bash
+launchctl load ~/Library/LaunchAgents/com.lululemon.monitor.plist
+```
+
+That's it! The monitor will now run automatically.
+
+## Managing the Monitor
+
+**Check if it's running:**
+```bash
+launchctl list | grep lululemon
+```
+
+**Stop the monitor:**
+```bash
+launchctl unload ~/Library/LaunchAgents/com.lululemon.monitor.plist
+```
+
+**Restart the monitor:**
+```bash
+launchctl unload ~/Library/LaunchAgents/com.lululemon.monitor.plist
+launchctl load ~/Library/LaunchAgents/com.lululemon.monitor.plist
+```
+
+**View live logs:**
+```bash
+tail -f monitor.log              # Normal output
+tail -f monitor.error.log        # Error output
+```
+
+## Manual Testing
+
+To test the monitor manually:
+
+```bash
+python monitor.py --run-once
+```
 
 ## Files
 
 - `monitor.py` - Main monitoring script
-- `urls.json` - Product URLs to monitor
+- `config.json` - Configuration (email, products, etc.)
+- `urls.json` - Product URLs (29 products)
 - `requirements.txt` - Python dependencies
-- `.github/workflows/monitor.yml` - GitHub Actions workflow
-
-## Manual Testing
-
-To test locally:
-
-```bash
-# Activate virtual environment
-source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Create config.json with your email settings (see config.example.json)
-# Then run once:
-python monitor.py --run-once
-```
+- `setup_launchagent.sh` - Setup script for automatic running
 
 ## Troubleshooting
 
 **Not receiving emails?**
-- Check that GitHub Secrets are set correctly
-- Verify Gmail App Password is correct
-- Check GitHub Actions logs for errors
+- Check that your Gmail App Password is correct in `config.json`
+- Check `monitor.error.log` for email errors
 
-**Workflow not running?**
-- Check that GitHub Actions is enabled in repository settings
-- Verify the workflow file is in `.github/workflows/` directory
-- Check Actions tab for workflow runs and errors
+**Monitor not running?**
+- Check status: `launchctl list | grep lululemon`
+- Check logs: `tail -f monitor.log` and `tail -f monitor.error.log`
+- Try restarting: unload then load the LaunchAgent
 
-**State not persisting?**
-- State is saved via GitHub Actions artifacts
-- First run will start with fresh state
-- Subsequent runs will use previous state
+**Products not detected?**
+- The monitor uses multiple detection strategies
+- Check logs to see what's being detected
+- Enable debug mode in `config.json` by setting `"debug": true`
 
 ## Notes
 
-- The monitor is respectful and includes delays between requests
-- State tracking prevents duplicate alerts for the same product/price
-- All 30 products in `urls.json` are monitored simultaneously
+- The monitor runs every 30 minutes automatically
+- State is tracked in `monitor_state.json` to prevent duplicate alerts
+- Logs are written to `monitor.log` and `monitor.error.log`
