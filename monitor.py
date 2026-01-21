@@ -70,7 +70,20 @@ class LululemonMonitor:
     def check_product(self, product_url):
         """Check a product's stock status and price."""
         try:
-            response = self.session.get(product_url, timeout=10)
+            # First, make a request to the homepage to establish a session and get cookies
+            # This helps bypass bot detection
+            try:
+                self.session.get('https://shop.lululemon.com/', timeout=5)
+                time.sleep(1)  # Small delay between requests
+            except:
+                pass  # Continue even if homepage request fails
+            
+            # Update referer to the actual Lululemon domain
+            headers = self.session.headers.copy()
+            headers['Referer'] = 'https://shop.lululemon.com/'
+            headers['Origin'] = 'https://shop.lululemon.com'
+            
+            response = self.session.get(product_url, timeout=15, headers=headers, allow_redirects=True)
             response.raise_for_status()
             
             soup = BeautifulSoup(response.text, 'html.parser')
