@@ -472,22 +472,21 @@ class LululemonMonitor:
         if current_tier is None:
             return None  # Price is >= $60, no alert
         
-        # Get previous state for this product
-        product_id = product_info['url']
-        last_state = self.state.get('last_alerts', {}).get(product_id, {})
+        # Get previous full sets from state
+        old_s1 = set(self.state.get('last_s1_set', []))  # Full set of URLs in S1 last run
+        old_s2 = set(self.state.get('last_s2_set', []))  # Full set of URLs in S2 last run
         
-        was_in_s1 = last_state.get('was_in_s1', False)
-        was_in_s2 = last_state.get('was_in_s2', False)
+        product_id = product_info['url']
         
         # S1 Alert: Currently in S1 AND wasn't in S1 before
         if current_tier == 'S1':
-            if not was_in_s1:
+            if product_id not in old_s1:
                 return 'S1'  # New S1 - old S1 (wasn't in S1 before)
             return None  # Was already in S1, no new alert
         
         # S2 Alert: Currently in S2 AND wasn't in S1 or S2 before
         elif current_tier == 'S2':
-            if not was_in_s1 and not was_in_s2:
+            if product_id not in old_s1 and product_id not in old_s2:
                 return 'S2'  # New S2 - (old S1 + old S2) (wasn't in either before)
             return None  # Was in S1 or S2 before, no new alert
         
@@ -555,24 +554,22 @@ Checked at: {product_info['checked_at']}
             tier_name = "Best Deal (S1)" if tier == 'S1' else "Great Deal (S2)"
             print(f"✅ Email sent ({tier_name}) for {product_info['name']}")
             
-            # Update state to record this alert and tier status
+            # Note: Full S1/S2 sets are saved at end of check_all_products()
+            # This per-product state is kept for backward compatibility and debugging
             product_id = product_info['url']
             if 'last_alerts' not in self.state:
                 self.state['last_alerts'] = {}
             
             current_tier = self.get_price_tier(product_info['price'])
             
-            # Update state: mark that product was in this tier
+            # Update per-product state (for debugging/history)
             self.state['last_alerts'][product_id] = {
                 'price': product_info['price'],
                 'in_stock': product_info['in_stock'],
-                'was_in_s1': (current_tier == 'S1'),
-                'was_in_s2': (current_tier == 'S2'),
                 'last_tier': current_tier,
                 'last_alerted_tier': tier,
                 'alerted_at': datetime.now().isoformat()
             }
-            self.save_state()
             
         except Exception as e:
             print(f"Error sending email: {e}")
@@ -624,22 +621,8 @@ Checked at: {product_info['checked_at']}
                     elif alert_tier == 'S2':
                         new_s2.append((product_info.get('name'), price_val, product_info.get('url')))
                 else:
-                    # Still update state even if no alert (to track current tier status)
-                    if in_stock and current_tier:
-                        product_id = product_info['url']
-                        if 'last_alerts' not in self.state:
-                            self.state['last_alerts'] = {}
-                        if product_id not in self.state['last_alerts']:
-                            self.state['last_alerts'][product_id] = {}
-                        
-                        # Update tier status without sending alert
-                        self.state['last_alerts'][product_id]['was_in_s1'] = (current_tier == 'S1')
-                        self.state['last_alerts'][product_id]['was_in_s2'] = (current_tier == 'S2')
-                        self.state['last_alerts'][product_id]['price'] = price_val
-                        self.state['last_alerts'][product_id]['in_stock'] = in_stock
-                        self.state['last_alerts'][product_id]['last_tier'] = current_tier
-                        self.save_state()
-                    
+                    # Note: Full S1/S2 sets are saved at end of check_all_products()
+                    # Per-product state is kept for debugging but not used for alert logic
                     print(f"  ⏭️  No alert needed")
             else:
                 print(f"  ❌ Failed to check product")
@@ -675,6 +658,12 @@ Checked at: {product_info['checked_at']}
         else:
             for name, price, url in new_s2:
                 print(f"  - {name} @ ${price:.2f}  ({url})")
+
+        # Save FULL current S1 and S2 sets to state for next run's delta calculation
+        # This is what becomes "old_s1" and "old_s2" for the next run
+        self.state['last_s1_set'] = [url for _, _, url in current_s1]
+        self.state['last_s2_set'] = [url for _, _, url in current_s2]
+        self.save_state()
 
         print("\nCheck complete.\n")
     
