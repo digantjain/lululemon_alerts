@@ -1,0 +1,22 @@
+{
+  "check_interval_minutes": 15,
+  "debug": false,
+  "email": {
+    "from": "your-email@gmail.com",
+    "to": "recipient-email@gmail.com",
+    "password": "your-app-password",
+    "use_smtp": false,
+    "smtp_host": "smtp.gmail.com",
+    "smtp_port": 587,
+    "smtp_tls": true,
+    "smtp_username": "",
+    "smtp_password": ""
+  },
+  "products": [
+    {
+      "url": "https://shop.lululemon.com/p/women-leggings/Align-High-Rise-Pant-25/_/PRODUCT_ID?color=COLOR_ID&sz=8",
+      "max_price": 60,
+      "name": "Women's Align Legging - Color Name - Size 8 - 25\" Inseam"
+    }
+  ]
+}
