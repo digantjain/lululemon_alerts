@@ -90,6 +90,13 @@ class LululemonMonitor:
             page_text = response.text
             import re
             
+            # Debug: Save page if needed (uncomment for debugging)
+            # import os
+            # debug_dir = '/tmp/lululemon_debug'
+            # os.makedirs(debug_dir, exist_ok=True)
+            # with open(f'{debug_dir}/page_{hash(product_url)%10000}.html', 'w', encoding='utf-8') as f:
+            #     f.write(page_text)
+            
             # Try to get product name from config first (urls.json has color names)
             product_name = "Align Legging"
             try:
@@ -120,15 +127,37 @@ class LululemonMonitor:
             is_in_stock = True
             stock_indicators = []
             
-            # Strategy 1: Look for embedded JSON data with variant information
-            # Lululemon often embeds product variant data in script tags
+            # Strategy 1: Look for "$XXX USD" pattern - PRIORITY to script tags (most reliable)
+            # User says "$108 USD" is obvious - search ALL script tags aggressively
             script_tags = soup.find_all('script')
-            variant_data = None
+            usd_patterns = [
+                r'\$(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)\s+USD',      # "$108 USD" with space
+                r'\$(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)USD',         # "$108USD" no space
+                r'\$(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)\s*USD',      # "$108 USD" flexible
+            ]
             
+            # Search ALL script tags (not just ones with USD)
             for script in script_tags:
                 if script.string:
-                    # Look for JSON objects that might contain variant/product data
-                    # Common patterns: window.__INITIAL_STATE__, productData, variants, etc.
+                    script_text = script.string
+                    for pattern in usd_patterns:
+                        match = re.search(pattern, script_text, re.IGNORECASE)
+                        if match:
+                            try:
+                                price_val = float(match.group(1).replace(',', ''))
+                                if 20 <= price_val <= 300:
+                                    current_price = price_val
+                                    stock_indicators.append(f"Price from script '$XXX USD': ${current_price}")
+                                    break
+                            except:
+                                pass
+                    if current_price:
+                        break
+            
+            # Strategy 2: Look for embedded JSON data with variant information
+            variant_data = None
+            for script in script_tags:
+                if script.string:
                     script_text = script.string
                     
                     # Try to find JSON-LD structured data
@@ -225,28 +254,35 @@ class LululemonMonitor:
                         if product_name and len(product_name) > 3:
                             stock_indicators.append(f"Title from regex: {product_name[:50]}")
             
-            # Look for "$XXX USD" pattern FIRST (Lululemon's standard format)
-            # Try different spacing patterns: "$98 USD", "$98USD", "$98  USD"
-            usd_price_match = re.search(r'\$(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)\s*USD', page_text, re.IGNORECASE)
-            if usd_price_match:
-                try:
-                    current_price = float(usd_price_match.group(1).replace(',', ''))
-                    stock_indicators.append(f"Price from '$XXX USD' pattern: ${current_price}")
-                except:
-                    pass
-            
-            # Also try without USD (just $XXX as standalone)
+            # Search page text for "$XXX USD" (after script tags, fallback)
+            # Only if not found in script tags
             if current_price is None:
-                # Look for prices followed by USD (with flexible spacing)
-                usd_pattern2 = re.search(r'\$\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)\s*(?:USD|USD)', page_text, re.IGNORECASE)
-                if usd_pattern2:
-                    try:
-                        price_val = float(usd_pattern2.group(1).replace(',', ''))
-                        if price_val >= 20 and price_val <= 300:
-                            current_price = price_val
-                            stock_indicators.append(f"Price from '$XXX USD' pattern (flexible): ${current_price}")
-                    except:
-                        pass
+                for pattern in usd_patterns:
+                    usd_price_match = re.search(pattern, page_text, re.IGNORECASE | re.MULTILINE)
+                    if usd_price_match:
+                        try:
+                            price_val = float(usd_price_match.group(1).replace(',', ''))
+                            if 20 <= price_val <= 300:
+                                current_price = price_val
+                                stock_indicators.append(f"Price from '$XXX USD' pattern: ${current_price}")
+                                break
+                        except:
+                            continue
+            
+            # Also search in soup text (handles HTML entities, non-breaking spaces)
+            if current_price is None:
+                soup_text = soup.get_text()
+                for pattern in usd_patterns:
+                    usd_price_match = re.search(pattern, soup_text, re.IGNORECASE | re.MULTILINE)
+                    if usd_price_match:
+                        try:
+                            price_val = float(usd_price_match.group(1).replace(',', ''))
+                            if 20 <= price_val <= 300:
+                                current_price = price_val
+                                stock_indicators.append(f"Price from '$XXX USD' (soup text): ${current_price}")
+                                break
+                        except:
+                            continue
             
             # Look for price elements (multiple strategies)
             if current_price is None:
@@ -301,9 +337,29 @@ class LululemonMonitor:
             
             # Stock detection: ONLY check for "Sold out online." text (exact requirement)
             # Default is IN STOCK unless this text appears
-            sold_out_pattern = re.search(r'sold out online\.', page_text, re.IGNORECASE)
+            # Search multiple ways to catch it
+            sold_out_patterns = [
+                r'sold\s+out\s+online\.',        # "sold out online." with spaces
+                r'sold\s+out\s+online',          # "sold out online" without period
+                r'Sold\s+out\s+online\.',        # Capitalized
+            ]
             
-            if sold_out_pattern:
+            sold_out_found = False
+            # Check in raw page text first
+            for pattern in sold_out_patterns:
+                if re.search(pattern, page_text, re.IGNORECASE):
+                    sold_out_found = True
+                    break
+            
+            # Also check in BeautifulSoup extracted text
+            if not sold_out_found:
+                soup_text = soup.get_text()
+                for pattern in sold_out_patterns:
+                    if re.search(pattern, soup_text, re.IGNORECASE):
+                        sold_out_found = True
+                        break
+            
+            if sold_out_found:
                 is_in_stock = False
                 stock_indicators.append("'Sold out online.' text found - OUT OF STOCK")
             else:
