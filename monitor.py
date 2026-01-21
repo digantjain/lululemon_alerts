@@ -183,14 +183,22 @@ class LululemonMonitor:
                                     break
             
             # Strategy 3: Parse HTML elements for stock status
-            # Look for product title
+            # Look for product title - try multiple strategies
             title_element = (soup.find('h1', {'data-testid': 'product-title'}) or
                            soup.find('h1', class_=lambda x: x and ('product' in x.lower() or 'title' in x.lower())) or
                            soup.find('h1'))
             
             if title_element:
                 product_name = title_element.get_text(strip=True)
-                stock_indicators.append(f"Title found: {product_name[:50]}")
+                if product_name and product_name != "" and len(product_name) > 3:
+                    stock_indicators.append(f"Title found: {product_name[:50]}")
+                else:
+                    # Try finding title in page text patterns
+                    title_match = re.search(r'<h1[^>]*>(.*?)</h1>', page_text, re.IGNORECASE | re.DOTALL)
+                    if title_match:
+                        product_name = re.sub(r'<[^>]+>', '', title_match.group(1)).strip()
+                        if product_name and len(product_name) > 3:
+                            stock_indicators.append(f"Title from regex: {product_name[:50]}")
             
             # Look for price elements (multiple strategies)
             price_element = (soup.find('span', {'data-testid': 'price'}) or
@@ -221,17 +229,22 @@ class LululemonMonitor:
                     except:
                         pass
             
-            # Fallback: search entire page for price pattern
+            # Fallback: search entire page for price pattern (filter out obviously wrong prices)
             if current_price is None:
                 price_pattern = r'\$\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)'
                 matches = re.findall(price_pattern, page_text)
                 if matches:
                     try:
-                        # Try first few matches, take the smallest (often the sale price)
-                        prices = [float(m.replace(',', '')) for m in matches[:5]]
+                        # Filter for realistic prices (Lululemon products are usually $20-$200+)
+                        # Ignore prices under $10 (likely incidental numbers)
+                        prices = [float(m.replace(',', '')) for m in matches]
+                        prices = [p for p in prices if p >= 20 and p <= 300]  # Filter realistic range
                         if prices:
-                            current_price = min(prices)  # Take the lowest price (could be sale price)
-                            stock_indicators.append(f"Price from page scan: ${current_price}")
+                            # For Lululemon, the main price is usually the most common or around $80-$120
+                            # But we want to catch sale prices too, so look for reasonable range
+                            current_price = min(prices) if prices else None
+                            if current_price:
+                                stock_indicators.append(f"Price from page scan: ${current_price}")
                     except:
                         pass
             
